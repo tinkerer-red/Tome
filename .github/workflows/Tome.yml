@@ -18,6 +18,10 @@ on:
         description: "Create a GitHub issue if Tome reports doc-generation failure"
         required: false
         default: "false"
+      verbose:
+        description: "Enable verbose Tome logging"
+        required: false
+        default: "false"
 
 permissions:
   contents: write
@@ -185,6 +189,7 @@ jobs:
         shell: pwsh
         env:
           TOME_CI_MODE: "1"
+          TOME_CI_VERBOSE: ${{ inputs.verbose == 'true' && '1' || '' }}
         run: |
           $_runner_log_path = "$env:TOME_LOG_PATH/runner.log"
 
