@@ -81,9 +81,67 @@ jobs:
           		Write-Host "Manual workflow run detected."
           		Write-Host "Using manual release_tag override."
           	} else {
-          		$_release_tag = $env:GITHUB_REF_NAME
           		Write-Host "Manual workflow run detected."
-          		Write-Host "No manual release_tag override supplied. Falling back to GITHUB_REF_NAME."
+          		Write-Host "No manual release_tag override supplied. Resolving current docs version from gh-pages."
+
+          		$_ghpages_ref = git ls-remote --heads origin gh-pages 2>$null
+
+          		if ($LASTEXITCODE -eq 0 -and $_ghpages_ref) {
+          			git fetch origin gh-pages --depth=1
+
+          			if ($LASTEXITCODE -ne 0) {
+          				Write-Error "Failed to fetch gh-pages while resolving current docs version."
+          				exit 1
+          			}
+
+          			$_config_text = git show origin/gh-pages:config.js 2>$null
+
+          			if ($LASTEXITCODE -eq 0 -and $_config_text) {
+          				try {
+          					$_config_json = ($_config_text -join "`n")
+          					$_config_json = $_config_json -replace "^\s*const\s+config\s*=\s*", ""
+          					$_config_json = $_config_json -replace ";\s*$", ""
+          					$_config_data = $_config_json | ConvertFrom-Json
+
+          					if ($null -ne $_config_data.latestVersion -and $_config_data.latestVersion -ne "") {
+          						$_release_tag = [string]$_config_data.latestVersion
+          						Write-Host "Resolved latestVersion from gh-pages/config.js:"
+          						Write-Host $_release_tag
+          					}
+          				} catch {
+          					Write-Host "Could not parse gh-pages/config.js. Falling back to version folders."
+          				}
+          			}
+
+          			if ($_release_tag -eq "") {
+          				$_release_tag = git ls-tree -d --name-only origin/gh-pages |
+          					Where-Object {
+          						$_ -ne "assets" -and
+          						$_ -ne "main"
+          					} |
+          					Sort-Object -Property @{
+          						Expression = {
+          							try {
+          								[version]($_ -replace "^v", "")
+          							} catch {
+          								[version]"0.0.0"
+          							}
+          						}
+          						Descending = $true
+          					} |
+          					Select-Object -First 1
+
+          				if ($_release_tag -ne "") {
+          					Write-Host "Resolved current docs version from gh-pages version folders:"
+          					Write-Host $_release_tag
+          				}
+          			}
+          		}
+
+          		if ($_release_tag -eq "") {
+          			$_release_tag = $env:GITHUB_REF_NAME
+          			Write-Host "No gh-pages docs version found. Falling back to GITHUB_REF_NAME."
+          		}
           	}
           } else {
           	$_release_tag = $env:GITHUB_REF_NAME
