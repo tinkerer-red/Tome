@@ -1,0 +1,34 @@
+# Setting Up Tome
+
+?> This guide assumes you know the basics of how Github repos work
+
+## Setting up Tome in your project
+1) Download the [latest version](https://github.com/chesrowe/Tome/releases) of Tome and import the `.yymps` file into your project.
+2) Clone the Github repo you want to use for your site locally.
+3) In your project, navigate to the script `tomeConfig` and set the macro `TOME_LOCAL_REPO_PATH` to the path of your locally cloned Github repo.
+4) Add your script and note files as well as any site customization in the tomeSetup function declaration found in the tomeDocSetup file.
+
+?> Note: You must disable GameMaker's sandbox (Game Options -> Platform -> Check "Disable file system sandbox") for Tome to properly execute.
+
+## Setting up GitHub Pages
+Next we'll configure Github pages to deploy your site. Unless you are using a custom domain, your site's domain will be `username.github.io/repoName`.
+
+1. on [GitHub.com](https://www.github.com), find your repo and click **settings** 
+
+![Imgur](https://imgur.com/YT8SE05.png)
+
+2. Find **Pages** and click it. 
+
+![Imgur](https://imgur.com/zj0gIF2.png)
+
+3. Make sure your source is set to deploy from branch, select the branch your docs are on, and then click **save**. 
+
+![Imgur](https://imgur.com/47L1HJ6.png)
+
+4. After saving, and several minutes have passed, you should see at the top of the page that your site is live! 
+
+![Imgur](https://imgur.com/oJvZQdN.png)
+
+**Tome** is now setup and ready to use!
+
+See how to set up your site's content [here](getting-started-setting-up-your-site)
