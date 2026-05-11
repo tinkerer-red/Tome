@@ -115,9 +115,9 @@ jobs:
         run: |
           $_older_versions = @()
 
-          git ls-remote --exit-code --heads origin gh-pages
+          $_ghpages_ref = git ls-remote --heads origin gh-pages
 
-          if ($LASTEXITCODE -eq 0) {
+          if ($_ghpages_ref) {
           	git fetch origin gh-pages --depth=1
 
           	if ($LASTEXITCODE -ne 0) {
@@ -221,7 +221,7 @@ jobs:
           	Sort-Object FullName -Descending |
           	Select-Object -First 1
 
-          if ($_null -eq $_runner_item) {
+          if ($null -eq $_runner_item) {
           	Write-Error "Runner.exe was not found in .gmcache\runtimes-gms2."
           	exit 1
           }
