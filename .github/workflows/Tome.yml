@@ -1,0 +1,492 @@
+name: Publish Tome docs
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      toolchain:
+        description: "GMS2 toolchain version (leave blank for latest)"
+        required: false
+        default: ""
+      release_tag:
+        description: "Release tag override for manual runs"
+        required: false
+        default: ""
+      create_issue_on_tome_failure:
+        description: "Create a GitHub issue if Tome reports doc-generation failure"
+        required: false
+        default: "false"
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: tome-docs
+  cancel-in-progress: false
+
+env:
+  GM_COMMAND: "@gamemaker/gm-cli@latest"
+  NO_COLOR: "1"
+  TOME_OUTPUT_PATH: "C:/tome-output"
+  TOME_LOG_PATH: "tome-logs"
+  PAGES_WORKTREE_PATH: "_pages"
+  CREATE_ISSUE_ON_TOME_FAILURE: "false"
+
+jobs:
+  publish-docs:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - name: Cache gm-cli files
+        uses: actions/cache@v5
+        with:
+          path: .gmcache
+          key: gmcache-windows-${{ inputs.toolchain || 'latest' }}
+
+      - name: Resolve release metadata
+        shell: pwsh
+        run: |
+          $_event_name = "${{ github.event_name }}"
+          $_release_tag = ""
+
+          if ($_event_name -eq "release") {
+          	$_release_tag = "${{ github.event.release.tag_name }}"
+          	Write-Host "Release event detected."
+          	Write-Host "Using published release tag as definitive version."
+          } elseif ($_event_name -eq "workflow_dispatch") {
+          	$_release_tag = "${{ inputs.release_tag }}"
+
+          	if ($_release_tag -ne "") {
+          		Write-Host "Manual workflow run detected."
+          		Write-Host "Using manual release_tag override."
+          	} else {
+          		$_release_tag = $env:GITHUB_REF_NAME
+          		Write-Host "Manual workflow run detected."
+          		Write-Host "No manual release_tag override supplied. Falling back to GITHUB_REF_NAME."
+          	}
+          } else {
+          	$_release_tag = $env:GITHUB_REF_NAME
+          	Write-Host "Non-release event detected. Falling back to GITHUB_REF_NAME."
+          }
+
+          if ($_release_tag -eq "") {
+          	Write-Error "Unable to resolve release tag."
+          	exit 1
+          }
+
+          $_create_issue = $env:CREATE_ISSUE_ON_TOME_FAILURE
+
+          if ($_event_name -eq "workflow_dispatch") {
+          	if ("${{ inputs.create_issue_on_tome_failure }}" -ne "") {
+          		$_create_issue = "${{ inputs.create_issue_on_tome_failure }}"
+          	}
+          }
+
+          Write-Host "Resolved release tag: $_release_tag"
+          Write-Host "Create issue on Tome failure: $_create_issue"
+
+          "RELEASE_TAG=$_release_tag" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "TOME_RELEASE_TAG=$_release_tag" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CREATE_ISSUE_ON_TOME_FAILURE_EFFECTIVE=$_create_issue" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Resolve older Tome versions
+        shell: pwsh
+        run: |
+          $_older_versions = @()
+
+          git ls-remote --exit-code --heads origin gh-pages
+
+          if ($LASTEXITCODE -eq 0) {
+          	git fetch origin gh-pages --depth=1
+
+          	if ($LASTEXITCODE -ne 0) {
+          		Write-Error "Failed to fetch gh-pages while resolving older Tome versions."
+          		exit 1
+          	}
+
+          	$_older_versions = git ls-tree -d --name-only origin/gh-pages |
+          		Where-Object {
+          			$_ -ne "assets" -and
+          			$_ -ne $env:RELEASE_TAG
+          		} |
+          		Sort-Object -Property @{
+          			Expression = {
+          				try {
+          					[version]($_ -replace "^v", "")
+          				} catch {
+          					[version]"0.0.0"
+          				}
+          			}
+          			Descending = $true
+          		}
+          } else {
+          	Write-Host "No gh-pages branch found. No older Tome versions were resolved."
+          }
+
+          $_older_versions = @($_older_versions)
+          $_older_versions_json = ConvertTo-Json -InputObject $_older_versions -Compress
+
+          if ($_older_versions_json -eq $null -or $_older_versions_json -eq "") {
+          	$_older_versions_json = "[]"
+          }
+
+          Write-Host "Resolved older Tome versions:"
+          Write-Host $_older_versions_json
+
+          "TOME_OLDER_VERSION=$_older_versions_json" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Prepare output directories
+        shell: pwsh
+        run: |
+          if (Test-Path $env:TOME_OUTPUT_PATH) {
+          	Remove-Item $env:TOME_OUTPUT_PATH -Recurse -Force
+          }
+
+          if (Test-Path $env:TOME_LOG_PATH) {
+          	Remove-Item $env:TOME_LOG_PATH -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Force -Path $env:TOME_OUTPUT_PATH | Out-Null
+          New-Item -ItemType Directory -Force -Path $env:TOME_LOG_PATH | Out-Null
+
+      - name: Compile project
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $_arguments = @(
+          	"compile",
+          	"TestRepo.yyp",
+          	"--target=windows",
+          	"--runtime=vm",
+          	"--verbose"
+          )
+
+          if ("${{ inputs.toolchain }}" -ne "") {
+          	$_arguments += "--toolchain=${{ inputs.toolchain }}"
+          }
+
+          npx "$env:GM_COMMAND" @_arguments
+
+      - name: Generate Tome docs
+        timeout-minutes: 2
+        shell: pwsh
+        env:
+          TOME_CI_MODE: "1"
+        run: |
+          $_runner_log_path = "$env:TOME_LOG_PATH/runner.log"
+
+          $_runner_item = Get-ChildItem ".gmcache\runtimes-gms2" -Filter "Runner.exe" -Recurse |
+          	Where-Object { $_.FullName -like "*\Windows\x64\Runner.exe" } |
+          	Sort-Object FullName -Descending |
+          	Select-Object -First 1
+
+          if ($_null -eq $_runner_item) {
+          	Write-Error "Runner.exe was not found in .gmcache\runtimes-gms2."
+          	exit 1
+          }
+
+          $_game_file = ".gmcache\build-gms2-windows-VM\output\TestRepo.win"
+
+          if (!(Test-Path $_game_file)) {
+          	Write-Error "TestRepo.win was not found."
+          	exit 1
+          }
+
+          $_game_item = Get-Item $_game_file
+
+          Write-Host "Runner:"
+          Write-Host $_runner_item.FullName
+
+          Write-Host "Game:"
+          Write-Host $_game_item.FullName
+
+          Write-Host "TOME_RELEASE_TAG passed to runner:"
+          Write-Host $env:TOME_RELEASE_TAG
+
+          Write-Host "TOME_OLDER_VERSION passed to runner:"
+          Write-Host $env:TOME_OLDER_VERSION
+
+          & $_runner_item.FullName -game $_game_item.FullName 2>&1 | Tee-Object -FilePath $_runner_log_path
+
+          $_runner_exit_code = $LASTEXITCODE
+
+          "RUNNER_LOG_PATH=$((Resolve-Path $_runner_log_path).Path)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "RUNNER_EXIT_CODE=$_runner_exit_code" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+          if ($_runner_exit_code -ne 0) {
+          	Write-Error "GameMaker runner exited with code $_runner_exit_code."
+          	exit $_runner_exit_code
+          }
+
+      - name: Write Tome diagnostic report
+        if: always()
+        shell: pwsh
+        run: |
+          $_log_directory = $env:TOME_LOG_PATH
+          $_runner_log_path = "$_log_directory/runner.log"
+          $_report_path = "$_log_directory/tome-report.md"
+
+          New-Item -ItemType Directory -Force -Path $_log_directory | Out-Null
+
+          if (!(Test-Path $_runner_log_path)) {
+          	"# Tome diagnostic report" | Out-File $_report_path -Encoding utf8
+          	"" | Out-File $_report_path -Encoding utf8 -Append
+          	"No runner log was produced." | Out-File $_report_path -Encoding utf8 -Append
+          	"TOME_REPORT_PATH=$((Resolve-Path $_report_path).Path)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          	"TOME_FAILED=false" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          	"TOME_SUCCEEDED=false" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          	exit 0
+          }
+
+          $_log_text = Get-Content $_runner_log_path -Raw
+          $_tome_failed = $_log_text -match "Tome: Doc generation failed"
+          $_tome_succeeded = $_log_text -match "Tome: All docs generated!"
+
+          $_warning_lines = Get-Content $_runner_log_path |
+          	Where-Object {
+          		$_ -match "Warnings:" -or
+          		$_ -match "^\s*\|" -or
+          		$_ -match "^\s*[A-Za-z0-9_./\\-]+ \[line [0-9]+\]" -or
+          		$_ -match "The given slug file" -or
+          		$_ -match "Something went wrong during parsing" -or
+          		$_ -match "Tome: Doc generation failed"
+          	}
+
+          "# Tome diagnostic report" | Out-File $_report_path -Encoding utf8
+          "" | Out-File $_report_path -Encoding utf8 -Append
+          "Repository: $env:GITHUB_REPOSITORY" | Out-File $_report_path -Encoding utf8 -Append
+          "Commit: $env:GITHUB_SHA" | Out-File $_report_path -Encoding utf8 -Append
+          "Release tag: $env:RELEASE_TAG" | Out-File $_report_path -Encoding utf8 -Append
+          "Older versions: $env:TOME_OLDER_VERSION" | Out-File $_report_path -Encoding utf8 -Append
+          "Workflow run: $env:GITHUB_RUN_ID" | Out-File $_report_path -Encoding utf8 -Append
+          "Runner exit code: $env:RUNNER_EXIT_CODE" | Out-File $_report_path -Encoding utf8 -Append
+          "" | Out-File $_report_path -Encoding utf8 -Append
+          "## Tome status" | Out-File $_report_path -Encoding utf8 -Append
+          "" | Out-File $_report_path -Encoding utf8 -Append
+          "Tome succeeded: $_tome_succeeded" | Out-File $_report_path -Encoding utf8 -Append
+          "Tome failed: $_tome_failed" | Out-File $_report_path -Encoding utf8 -Append
+          "" | Out-File $_report_path -Encoding utf8 -Append
+          "## Tome warnings" | Out-File $_report_path -Encoding utf8 -Append
+          "" | Out-File $_report_path -Encoding utf8 -Append
+
+          if ($_warning_lines.Count -eq 0) {
+          	"No Tome warnings were detected." | Out-File $_report_path -Encoding utf8 -Append
+          } else {
+          	'```text' | Out-File $_report_path -Encoding utf8 -Append
+          	$_warning_lines | Out-File $_report_path -Encoding utf8 -Append
+          	'```' | Out-File $_report_path -Encoding utf8 -Append
+          }
+
+          "" | Out-File $_report_path -Encoding utf8 -Append
+          "## Generated files" | Out-File $_report_path -Encoding utf8 -Append
+          "" | Out-File $_report_path -Encoding utf8 -Append
+
+          if (Test-Path $env:TOME_OUTPUT_PATH) {
+          	Get-ChildItem $env:TOME_OUTPUT_PATH -Recurse -File |
+          		Sort-Object FullName |
+          		ForEach-Object {
+          			$_relative_path = $_.FullName.Substring($env:TOME_OUTPUT_PATH.Length).TrimStart("\", "/")
+          			"- $_relative_path ($($_.Length) bytes)" | Out-File $_report_path -Encoding utf8 -Append
+          		}
+          } else {
+          	"Tome output directory does not exist." | Out-File $_report_path -Encoding utf8 -Append
+          }
+
+          "TOME_REPORT_PATH=$((Resolve-Path $_report_path).Path)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "TOME_FAILED=$($_tome_failed.ToString().ToLower())" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "TOME_SUCCEEDED=$($_tome_succeeded.ToString().ToLower())" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+          Get-Content $_report_path
+
+      - name: Upload Tome output artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tome-output-${{ env.RELEASE_TAG }}
+          path: C:/tome-output/
+          if-no-files-found: warn
+
+      - name: Upload Tome diagnostics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tome-diagnostics-${{ env.RELEASE_TAG }}
+          path: tome-logs/
+          if-no-files-found: warn
+
+      - name: Create GitHub issue for Tome failure
+        if: ${{ always() && env.TOME_FAILED == 'true' && env.CREATE_ISSUE_ON_TOME_FAILURE_EFFECTIVE == 'true' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $_issue_title = "Tome docs failed for $env:RELEASE_TAG"
+          $_issue_body_path = "$env:TOME_LOG_PATH/issue-body.md"
+
+          "# Tome docs failed" | Out-File $_issue_body_path -Encoding utf8
+          "" | Out-File $_issue_body_path -Encoding utf8 -Append
+          "Release tag: $env:RELEASE_TAG" | Out-File $_issue_body_path -Encoding utf8 -Append
+          "Older versions: $env:TOME_OLDER_VERSION" | Out-File $_issue_body_path -Encoding utf8 -Append
+          "Commit: $env:GITHUB_SHA" | Out-File $_issue_body_path -Encoding utf8 -Append
+          "Workflow run: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID" | Out-File $_issue_body_path -Encoding utf8 -Append
+          "" | Out-File $_issue_body_path -Encoding utf8 -Append
+          "## Diagnostic report" | Out-File $_issue_body_path -Encoding utf8 -Append
+          "" | Out-File $_issue_body_path -Encoding utf8 -Append
+
+          if (Test-Path $env:TOME_REPORT_PATH) {
+          	Get-Content $env:TOME_REPORT_PATH | Out-File $_issue_body_path -Encoding utf8 -Append
+          } else {
+          	"No Tome report was generated." | Out-File $_issue_body_path -Encoding utf8 -Append
+          }
+
+          gh issue create --title $_issue_title --body-file $_issue_body_path
+
+      - name: Validate Tome status
+        shell: pwsh
+        run: |
+          if ($env:TOME_FAILED -eq "true") {
+          	Write-Error "Tome reported doc-generation failure. See tome-report.md and runner.log artifacts."
+          	exit 1
+          }
+
+          if ($env:TOME_SUCCEEDED -ne "true") {
+          	Write-Error "Tome did not report successful doc generation. See tome-report.md and runner.log artifacts."
+          	exit 1
+          }
+
+          if (!(Test-Path $env:TOME_OUTPUT_PATH)) {
+          	Write-Error "Tome output directory was not created."
+          	exit 1
+          }
+
+          Write-Host "Tome reported successful doc generation."
+          Get-ChildItem $env:TOME_OUTPUT_PATH -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
+
+      - name: Prepare gh-pages worktree
+        shell: pwsh
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global core.autocrlf false
+
+          $_pages_branch_exists = $false
+          git ls-remote --exit-code --heads origin gh-pages
+
+          if ($LASTEXITCODE -eq 0) {
+          	$_pages_branch_exists = $true
+          }
+
+          if (Test-Path $env:PAGES_WORKTREE_PATH) {
+          	Remove-Item $env:PAGES_WORKTREE_PATH -Recurse -Force
+          }
+
+          if ($_pages_branch_exists) {
+          	git fetch origin gh-pages --depth=1
+          	if ($LASTEXITCODE -ne 0) {
+          		Write-Error "Failed to fetch gh-pages."
+          		exit 1
+          	}
+
+          	git worktree add $env:PAGES_WORKTREE_PATH origin/gh-pages
+          	if ($LASTEXITCODE -ne 0) {
+          		Write-Error "Failed to create gh-pages worktree."
+          		exit 1
+          	}
+
+          	git -C $env:PAGES_WORKTREE_PATH checkout -B gh-pages
+          	if ($LASTEXITCODE -ne 0) {
+          		Write-Error "Failed to check out gh-pages."
+          		exit 1
+          	}
+          } else {
+          	git worktree add --detach $env:PAGES_WORKTREE_PATH
+          	if ($LASTEXITCODE -ne 0) {
+          		Write-Error "Failed to create detached worktree."
+          		exit 1
+          	}
+
+          	git -C $env:PAGES_WORKTREE_PATH checkout --orphan gh-pages
+          	if ($LASTEXITCODE -ne 0) {
+          		Write-Error "Failed to create orphan gh-pages branch."
+          		exit 1
+          	}
+
+          	git -C $env:PAGES_WORKTREE_PATH rm -rf .
+          }
+
+      - name: Publish Tome output to gh-pages
+        shell: pwsh
+        run: |
+          $_pages_path = (Resolve-Path $env:PAGES_WORKTREE_PATH).Path
+
+          Copy-Item "$env:TOME_OUTPUT_PATH/index.html" "$_pages_path/index.html" -Force
+          Copy-Item "$env:TOME_OUTPUT_PATH/config.js" "$_pages_path/config.js" -Force
+          Copy-Item "$env:TOME_OUTPUT_PATH/.nojekyll" "$_pages_path/.nojekyll" -Force
+
+          if (Test-Path "$env:TOME_OUTPUT_PATH/assets") {
+          	if (Test-Path "$_pages_path/assets") {
+          		Remove-Item "$_pages_path/assets" -Recurse -Force
+          	}
+
+          	Copy-Item "$env:TOME_OUTPUT_PATH/assets" "$_pages_path/assets" -Recurse -Force
+          }
+
+          Get-ChildItem $env:TOME_OUTPUT_PATH -Directory |
+          	Where-Object { $_.Name -ne "assets" } |
+          	ForEach-Object {
+          		$_target_directory = Join-Path $_pages_path $_.Name
+
+          		if (Test-Path $_target_directory) {
+          			Remove-Item $_target_directory -Recurse -Force
+          		}
+
+          		Copy-Item $_.FullName $_target_directory -Recurse -Force
+          	}
+
+          Write-Host "Published Tome output tree:"
+          Get-ChildItem $_pages_path -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
+
+      - name: Push gh-pages
+        shell: pwsh
+        run: |
+          git -C $env:PAGES_WORKTREE_PATH add --all
+
+          $_status = git -C $env:PAGES_WORKTREE_PATH status --porcelain
+
+          if ($_status -eq "") {
+          	Write-Host "No gh-pages changes to publish."
+          	exit 0
+          }
+
+          git -C $env:PAGES_WORKTREE_PATH commit -m "Publish Tome docs for $env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) {
+          	Write-Error "Failed to commit gh-pages changes."
+          	exit 1
+          }
+
+          git -C $env:PAGES_WORKTREE_PATH push origin HEAD:gh-pages
+          if ($LASTEXITCODE -ne 0) {
+          	Write-Error "Failed to push gh-pages."
+          	exit 1
+          }
+
+      - name: Upload GameMaker build output artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gamemaker-build-output-${{ env.RELEASE_TAG }}
+          path: .gmcache/build-gms2-windows-VM/output/
+          if-no-files-found: warn
