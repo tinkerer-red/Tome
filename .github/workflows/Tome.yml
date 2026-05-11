@@ -204,9 +204,25 @@ jobs:
           $_project_item = Get-Item $_project_file
           $_project_file = $_project_item.FullName
           $_project_name = [System.IO.Path]::GetFileNameWithoutExtension($_project_file)
+          $_project_directory = $_project_item.Directory.FullName
+          $_gm_cache_path = Join-Path $_project_directory ".gmcache"
+
+          Write-Host "Project file:"
+          Write-Host $_project_file
+
+          Write-Host "Project name:"
+          Write-Host $_project_name
+
+          Write-Host "Project directory:"
+          Write-Host $_project_directory
+
+          Write-Host "GameMaker cache path:"
+          Write-Host $_gm_cache_path
 
           "GM_PROJECT_FILE=$_project_file" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "GM_PROJECT_NAME=$_project_name" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "GM_PROJECT_DIRECTORY=$_project_directory" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "GM_CACHE_PATH=$_gm_cache_path" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
           $_arguments = @(
           	"compile",
@@ -231,24 +247,33 @@ jobs:
         run: |
           $_runner_log_path = "$env:TOME_LOG_PATH/runner.log"
 
-          $_runner_item = Get-ChildItem ".gmcache\runtimes-gms2" -Filter "Runner.exe" -Recurse |
+          if ($env:GM_CACHE_PATH -eq "") {
+          	Write-Error "GM_CACHE_PATH was not set by the compile step."
+          	exit 1
+          }
+
+          $_runner_item = Get-ChildItem "$env:GM_CACHE_PATH\runtimes-gms2" -Filter "Runner.exe" -Recurse |
           	Where-Object { $_.FullName -like "*\Windows\x64\Runner.exe" } |
           	Sort-Object FullName -Descending |
           	Select-Object -First 1
 
           if ($null -eq $_runner_item) {
-          	Write-Error "Runner.exe was not found in .gmcache\runtimes-gms2."
+          	Write-Error "Runner.exe was not found in $env:GM_CACHE_PATH\runtimes-gms2."
           	exit 1
           }
 
-          $_game_file = ".gmcache\build-gms2-windows-VM\output\$env:GM_PROJECT_NAME.win"
+          $_output_directory = Join-Path $env:GM_CACHE_PATH "build-gms2-windows-VM\output"
 
-          if (!(Test-Path $_game_file)) {
-          	Write-Error "$env:GM_PROJECT_NAME.win was not found."
+          $_game_file = Get-ChildItem $_output_directory -Filter "*.win" -Recurse |
+          	Sort-Object FullName |
+          	Select-Object -First 1
+
+          if ($null -eq $_game_file) {
+          	Write-Error "No compiled .win file was found in $_output_directory."
           	exit 1
           }
 
-          $_game_item = Get-Item $_game_file
+          $_game_item = Get-Item $_game_file.FullName
 
           Write-Host "Runner:"
           Write-Host $_runner_item.FullName
@@ -531,5 +556,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gamemaker-build-output-${{ env.RELEASE_TAG }}
-          path: .gmcache/build-gms2-windows-VM/output/
+          path: "**/.gmcache/build-gms2-windows-VM/output/"
           if-no-files-found: warn
