@@ -3,7 +3,7 @@ const config = {
 	"latestVersion": "1.1.0",
 	"favicon": "assets/docsIcon.png",
 	"executeScript": "false",
-	"otherVersions": ["main"],
+	"otherVersions": [],
 	"name": "Tome",
 	"description": "Documentation for the Tome library"
 };
