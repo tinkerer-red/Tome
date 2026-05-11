@@ -1928,13 +1928,13 @@ function __tomeStructToCSS(_cssStruct, _indent = ""){
         var _key = _orderedKeys[_i];
         var _value = _cssStruct[$ _key];
         
-        if (is_struct(_value)){
-            _nestedString += $"{_indent}{_key}{"{"}\n";
-            _nestedString += __tomeStructToCSS(_value, _indent + "\t");
-            _nestedString += $"{_indent}{"}"}\n\n";
-        }else{
-            _propertyString += $"{_indent}{_key}: {_value};\n";
-        }
+		if (is_struct(_value)) {
+			_nestedString += _indent + _key + "{\n";
+			_nestedString += __tomeStructToCSS(_value, _indent + "\t");
+			_nestedString += _indent + "}\n\n";
+		} else {
+			_propertyString += _indent + _key + ": " + string(_value) + ";\n";
+		}
         
         _i++;
     }
