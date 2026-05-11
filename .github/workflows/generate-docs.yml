@@ -34,7 +34,7 @@ jobs:
         with:
           fetch-depth: 0   # needed so git ls-remote can see the gh-pages branch
 
-      - uses: tinkerer-red/GML-Actions/actions/generate-docs@v2.1.0
+      - uses: tinkerer-red/GML-Actions/actions/generate-docs@v2
         with:
           # project-file: "Tome/Tome.yyp"   # set when multiple .yyp files exist
           release-tag:             ${{ github.event.inputs.release_tag }}
