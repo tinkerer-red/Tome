@@ -114,10 +114,9 @@ jobs:
         shell: pwsh
         run: |
           $_older_versions = @()
+          $_ghpages_ref = git ls-remote --heads origin gh-pages 2>$null
 
-          $_ghpages_ref = git ls-remote --heads origin gh-pages
-
-          if ($_ghpages_ref) {
+          if ($LASTEXITCODE -eq 0 -and $_ghpages_ref) {
           	git fetch origin gh-pages --depth=1
 
           	if ($LASTEXITCODE -ne 0) {
@@ -155,6 +154,8 @@ jobs:
           Write-Host $_older_versions_json
 
           "TOME_OLDER_VERSION=$_older_versions_json" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+          exit 0
 
       - name: Prepare output directories
         shell: pwsh
