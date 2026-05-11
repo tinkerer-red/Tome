@@ -1,0 +1,2 @@
+-    [Report a bug](https://github.com/CataclysmicStudios/Tome/issues)
+-    [Releases](https://github.com/CataclysmicStudios/Tome/releases)

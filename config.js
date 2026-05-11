@@ -1,9 +1,9 @@
 const config = {
 	"themeColor": "#11DD11",
-	"latestVersion": "main",
+	"latestVersion": "1.1.0",
 	"favicon": "assets/docsIcon.png",
 	"executeScript": "false",
-	"otherVersions": [],
+	"otherVersions": ["main"],
 	"name": "Tome",
 	"description": "Documentation for the Tome library"
 };
